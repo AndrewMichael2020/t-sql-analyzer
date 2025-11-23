@@ -4,7 +4,7 @@ A web application that converts T-SQL queries into Mermaid flowchart diagrams us
 
 ## Features
 
-- **Parse T-SQL**: Deterministic SQL parsing using ts-sql-parser
+- **Parse T-SQL**: Deterministic SQL parsing using node-sql-parser
 - **Extract Structure**: Automatic extraction of tables, joins, filters, and subqueries
 - **AI-Powered Diagrams**: Uses OpenAI GPT-4o-mini to generate clean Mermaid flowcharts
 - **Interactive UI**: Clean, two-pane interface inspired by Mermaid Exporter
@@ -15,7 +15,7 @@ A web application that converts T-SQL queries into Mermaid flowchart diagrams us
 - **Framework**: Next.js 14 (App Router) with TypeScript
 - **Frontend**: React, Mermaid.js
 - **Backend**: Next.js Route Handlers
-- **SQL Parser**: ts-sql-parser
+- **SQL Parser**: node-sql-parser
 - **AI**: OpenAI GPT-4o-mini
 - **Deployment**: Docker + Google Cloud Run
 
@@ -116,7 +116,7 @@ docker run -p 3000:3000 -e OPENAI_API_KEY=your_key t-sql-flowchart-visualizer
 
 ## How It Works
 
-1. **Parse**: SQL is parsed into an AST using ts-sql-parser
+1. **Parse**: SQL is parsed into an AST using node-sql-parser
 2. **Extract**: The AST is analyzed to extract tables, joins, filters, etc.
 3. **Generate**: The extracted structure is sent to GPT-4o-mini to generate Mermaid code
 4. **Render**: The Mermaid code is rendered in the browser using mermaid.js
