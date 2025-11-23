@@ -1,10 +1,6 @@
 import OpenAI from 'openai';
 import type { DiagramSpec } from '@/shared/types/diagramSpec';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 export async function getMermaidFromDiagramSpec(spec: DiagramSpec): Promise<string> {
   if (!process.env.OPENAI_API_KEY) {
     return createErrorDiagram('OpenAI API key not configured');
@@ -18,6 +14,11 @@ export async function getMermaidFromDiagramSpec(spec: DiagramSpec): Promise<stri
   const prompt = buildPrompt(spec);
 
   try {
+    // Initialize OpenAI client here, not at module level
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
