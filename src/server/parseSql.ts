@@ -21,15 +21,15 @@ function sanitizeSqlForParser(sql: string): string {
   // Examples:
   // - IF OBJECT_ID('tempdb..#RawVisits') IS NOT NULL DROP TABLE #RawVisits;
   // - IF OBJECT_ID('dbo.TableName', 'U') IS NOT NULL DROP TABLE dbo.TableName;
-  s = s.replace(/IF\s+OBJECT_ID\s*\([^)]+\)\s+IS\s+NOT\s+NULL\s+DROP\s+TABLE\s+[^;]+;?/gi, '');
+  s = s.replace(/IF\s+OBJECT_ID\s*\([^)]+\)\s+IS\s+NOT\s+NULL\s+DROP\s+TABLE\s+[a-zA-Z_#@][\w#$.[\]]*\s*;?/gi, '');
   
   // Remove IF EXISTS (...) DROP TABLE statements
   // Example: IF EXISTS (SELECT 1 FROM tempdb.sys.tables WHERE name LIKE '#History%') DROP TABLE #History;
-  s = s.replace(/IF\s+EXISTS\s*\([^)]+\)\s+DROP\s+TABLE\s+[^;]+;?/gi, '');
+  s = s.replace(/IF\s+EXISTS\s*\([^)]+\)\s+DROP\s+TABLE\s+[a-zA-Z_#@][\w#$.[\]]*\s*;?/gi, '');
   
   // Remove standalone DROP TABLE IF EXISTS statements (T-SQL 2016+)
   // Example: DROP TABLE IF EXISTS #TempTable;
-  s = s.replace(/DROP\s+TABLE\s+IF\s+EXISTS\s+[^;]+;?/gi, '');
+  s = s.replace(/DROP\s+TABLE\s+IF\s+EXISTS\s+[a-zA-Z_#@][\w#$.[\]]*\s*;?/gi, '');
   
   // Remove table hints like WITH (NOLOCK), WITH (READUNCOMMITTED), etc.
   // These appear after table names in FROM/JOIN clauses

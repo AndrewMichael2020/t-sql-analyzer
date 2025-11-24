@@ -58,9 +58,19 @@ export async function POST(request: Request) {
         userMessage = `${message}\n\nTip: This analyzer supports SELECT and INSERT statements with CTEs and temp tables. If your SQL contains advanced T-SQL features like stored procedures, DECLARE statements, WHILE loops, or complex control flow, those parts may not be supported.`;
       }
       
+      // Escape special characters for safe display in Mermaid
+      const escapedMessage = message.replace(/["\[\]]/g, (char) => {
+        switch (char) {
+          case '"': return '\\"';
+          case '[': return '(';
+          case ']': return ')';
+          default: return char;
+        }
+      });
+      
       return NextResponse.json(
         {
-          mermaid: `flowchart TD\n    E["Parse Error: ${message.replace(/"/g, '\\"')}"]`,
+          mermaid: `flowchart TD\n    E["Parse Error: ${escapedMessage}"]`,
           spec: null,
           error: userMessage,
         },
