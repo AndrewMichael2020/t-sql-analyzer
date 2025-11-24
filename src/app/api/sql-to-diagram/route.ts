@@ -49,11 +49,30 @@ export async function POST(request: Request) {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to parse SQL';
       console.error('Parse error:', message);
+      
+      // Create a user-friendly error message
+      let userMessage = message;
+      
+      // Check if it's a parsing error and provide suggestions
+      if (message.toLowerCase().includes('parse') || message.toLowerCase().includes('unable')) {
+        userMessage = `${message}\n\nTip: This analyzer supports SELECT and INSERT statements with CTEs and temp tables. If your SQL contains advanced T-SQL features like stored procedures, DECLARE statements, WHILE loops, or complex control flow, those parts may not be supported.`;
+      }
+      
+      // Escape special characters for safe display in Mermaid
+      const escapedMessage = message.replace(/["\[\]]/g, (char) => {
+        switch (char) {
+          case '"': return '\\"';
+          case '[': return '(';
+          case ']': return ')';
+          default: return char;
+        }
+      });
+      
       return NextResponse.json(
         {
-          mermaid: `flowchart TD\n    E[${message}]`,
+          mermaid: `flowchart TD\n    E["Parse Error: ${escapedMessage}"]`,
           spec: null,
-          error: message,
+          error: userMessage,
         },
         { status: 400 }
       );

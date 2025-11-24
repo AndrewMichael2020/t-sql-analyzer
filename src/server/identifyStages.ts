@@ -17,7 +17,13 @@ export function identifyStages(sqlText: string): StageSpec[] {
     const parseResult = parseSql(sqlText);
     const ast: any = parseResult.ast;
     // If the parser returned a null AST then parsing failed; surface an error so callers can handle it
-    if (!ast) throw new Error('Failed to parse SQL');
+    if (!ast) {
+      throw new Error(
+        'Unable to parse the SQL query. The SQL may contain unsupported T-SQL syntax. ' +
+        'Please check for complex control flow statements (IF/ELSE, WHILE, DECLARE), ' +
+        'stored procedure calls, or other advanced T-SQL features that are not supported.'
+      );
+    }
     
     const parsedStages: ParsedStage[] = [];
     
@@ -27,7 +33,9 @@ export function identifyStages(sqlText: string): StageSpec[] {
     const filtered = Array.isArray(statements) ? statements.filter(Boolean) : statements;
     // If we have no valid statements or the statements are not select/insert/with shapes, throw parse error
     if (!filtered || (Array.isArray(filtered) && filtered.length === 0)) {
-      throw new Error('Failed to parse SQL');
+      throw new Error(
+        'No valid SQL statements found. The SQL may be empty or contain only comments/control flow statements.'
+      );
     }
     const validTypes = new Set(['select', 'insert']);
     const hasValidType = (Array.isArray(filtered) ? filtered : [filtered]).some((st) => {
@@ -38,11 +46,15 @@ export function identifyStages(sqlText: string): StageSpec[] {
       return false;
     });
     if (!hasValidType) {
-      throw new Error('Failed to parse SQL');
+      throw new Error(
+        'No SELECT or INSERT statements found in the SQL. This tool analyzes query structure and requires at least one SELECT or INSERT statement.'
+      );
     }
     // If the parser returned an array with all null/undefined entries, treat as parse failure
     if (Array.isArray(statements) && statements.length > 0 && statements.every((s) => !s)) {
-      throw new Error('Failed to parse SQL');
+      throw new Error(
+        'Unable to parse the SQL query. The SQL may contain unsupported syntax.'
+      );
     }
     
     for (const stmt of statements) {
