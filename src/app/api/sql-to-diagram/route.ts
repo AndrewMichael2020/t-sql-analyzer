@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { parseSql } from '@/server/parseSql';
-import { extractDiagramSpec } from '@/server/extractDiagramSpec';
-import { getMermaidFromDiagramSpec } from '@/server/openAiClient';
+import { identifyStages } from '@/server/identifyStages';
+import { generateMermaidCode } from '@/server/generateMermaid';
+import type { DiagramSpec } from '@/shared/types/diagramSpec';
 
 export async function POST(request: Request) {
   try {
@@ -42,10 +42,10 @@ export async function POST(request: Request) {
       );
     }
 
-    // Parse SQL
-    let ast;
+    // Identify stages (CTEs, temp tables, final SELECT)
+    let stages;
     try {
-      ast = parseSql(sql);
+      stages = identifyStages(sql);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to parse SQL';
       console.error('Parse error:', message);
@@ -59,13 +59,13 @@ export async function POST(request: Request) {
       );
     }
 
-    // Extract diagram specification
-    const spec = extractDiagramSpec(ast);
+    // Build diagram spec
+    const spec: DiagramSpec = { stages };
 
-    // Generate Mermaid diagram using OpenAI
+    // Generate Mermaid diagram (deterministic, no AI)
     let mermaid;
     try {
-      mermaid = await getMermaidFromDiagramSpec(spec);
+      mermaid = generateMermaidCode(spec);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to generate diagram';
       console.error('Diagram generation error:', message);

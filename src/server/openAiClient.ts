@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
-import type { DiagramSpec } from '@/shared/types/diagramSpec';
+import type { LegacyDiagramSpec } from '@/shared/types/diagramSpec';
 
-export async function getMermaidFromDiagramSpec(spec: DiagramSpec): Promise<string> {
+export async function getMermaidFromDiagramSpec(spec: LegacyDiagramSpec): Promise<string> {
   if (!process.env.OPENAI_API_KEY) {
     return createErrorDiagram('OpenAI API key not configured');
   }
@@ -55,7 +55,7 @@ export async function getMermaidFromDiagramSpec(spec: DiagramSpec): Promise<stri
   }
 }
 
-function buildPrompt(spec: DiagramSpec): string {
+function buildPrompt(spec: LegacyDiagramSpec): string {
   return `Generate a Mermaid flowchart diagram from this SQL diagram specification:
 
 ${JSON.stringify(spec, null, 2)}

@@ -1,7 +1,7 @@
-import type { DiagramSpec, TableSpec, JoinSpec, FilterSpec } from '@/shared/types/diagramSpec';
+import type { LegacyDiagramSpec, TableSpec, JoinSpec, FilterSpec } from '@/shared/types/diagramSpec';
 
-export function extractDiagramSpec(ast: any): DiagramSpec {
-  const spec: DiagramSpec = {
+export function extractDiagramSpec(ast: any): LegacyDiagramSpec {
+  const spec: LegacyDiagramSpec = {
     tables: [],
     joins: [],
     filters: [],
@@ -26,7 +26,7 @@ export function extractDiagramSpec(ast: any): DiagramSpec {
   return spec;
 }
 
-function extractFromSelectStatement(node: any, spec: DiagramSpec): void {
+function extractFromSelectStatement(node: any, spec: LegacyDiagramSpec): void {
   let tableIndex = 0;
   const tableMap = new Map<string, string>(); // Maps table names/aliases to IDs
 
