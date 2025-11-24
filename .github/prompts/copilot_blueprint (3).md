@@ -367,7 +367,7 @@ The **home page** at `/` should visually and functionally mirror the existing Me
 
   - Label: `"T-SQL query"`.
   - Large `<textarea>` with monospace font.
-  - Optional small helper text: `"Paste a T-SQL query from CAADSI reports or stored procedures."`
+  - Optional small helper text: `"Paste a T-SQL query from your reports or stored procedures."`
   - Primary button: `"Generate diagram"`.
     - Disabled when `isLoading` or when `sql.trim().length === 0`.
 

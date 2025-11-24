@@ -28,7 +28,7 @@ export default function SqlInputForm({
             T-SQL Query
           </label>
           <p className="form-helper-text">
-            Paste a T-SQL query from CAADSI reports or stored procedures.
+            Paste a T-SQL query from your reports or stored procedures.
           </p>
           <textarea
             id="sql-input"
