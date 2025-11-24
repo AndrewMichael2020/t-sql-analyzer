@@ -77,15 +77,17 @@ export function identifyStages(sqlText: string): StageSpec[] {
       if ((stmt as any).type === 'select' && (stmt as any).into) {
         const intoObj = (stmt as any).into;
         // Support multiple AST shapes for INTO
-        const tempTableName = extractTableIdentifierFromNode(intoObj) || intoObj || null;
-        if (tempTableName) {
+        const tempTableName = extractTableIdentifierFromNode(intoObj);
+        // Only treat as INTO if we actually found a table name
+        // (parser may set into: { position: null } even when there's no INTO clause)
+        if (tempTableName && typeof tempTableName === 'string') {
           parsedStages.push({
-            name: String(tempTableName),
+            name: tempTableName,
             type: "TEMP_TABLE",
             ast: stmt
           });
         } else {
-          // INTO exists but no table name - treat as final SELECT
+          // INTO exists but no valid table name - treat as final SELECT
           parsedStages.push({
             name: "Final SELECT",
             type: "FINAL_SELECT",

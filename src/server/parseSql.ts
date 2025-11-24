@@ -10,6 +10,13 @@ export interface ParseResult {
 function sanitizeSqlForParser(sql: string): string {
   let s = sql;
   // Remove common T-SQL constructs that confuse the parser but don't affect table references
+  
+  // Remove schema qualifiers from CTE names in WITH clause (e.g., "WITH [dbo].Orders AS" -> "WITH Orders AS")
+  // This pattern matches: WITH [schema].name AS or WITH schema.name AS
+  s = s.replace(/WITH\s+(?:\[?[a-zA-Z0-9_]+\]?\.)?(\[?[a-zA-Z0-9_]+\]?)\s+AS/gi, 'WITH $1 AS');
+  // Also handle comma-separated CTEs: ", [schema].name AS" -> ", name AS"
+  s = s.replace(/,\s+(?:\[?[a-zA-Z0-9_]+\]?\.)?(\[?[a-zA-Z0-9_]+\]?)\s+AS/gi, ', $1 AS');
+  
   // Remove "AT TIME ZONE <tz>"
   s = s.replace(/\sAT\s+TIME\s+ZONE\s+[^\s,;\)]+/gi, '');
   // Remove OVER (...) window clauses to avoid complex function parsing
