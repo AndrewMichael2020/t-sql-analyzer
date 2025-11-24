@@ -1,5 +1,6 @@
 import { Parser } from 'node-sql-parser';
 import type { StageSpec, FromItem, JoinItem, WhereItem, GroupByItem } from '@/shared/types/diagramSpec';
+import { canonicalizeIdentifier, extractTableIdentifierFromNode } from './utils/canonicalize';
 
 interface ParsedStage {
   name: string;
@@ -49,7 +50,8 @@ export function identifyStages(sqlText: string): StageSpec[] {
       // Check if this is a SELECT INTO (temp table creation)
       if ((stmt as any).type === 'select' && (stmt as any).into) {
         const intoObj = (stmt as any).into;
-        const tempTableName = intoObj.table || intoObj.expr;
+        // Support multiple AST shapes for INTO
+        const tempTableName = intoObj?.table || intoObj?.expr || intoObj?.value || intoObj || null;
         if (tempTableName) {
           parsedStages.push({
             name: tempTableName,
@@ -67,7 +69,10 @@ export function identifyStages(sqlText: string): StageSpec[] {
       }
       // Check if this is an INSERT INTO (temp table insert)
       else if ((stmt as any).type === 'insert' && (stmt as any).table) {
-        const tempTableName = (stmt as any).table;
+        let tempTableName = (stmt as any).table;
+        if (tempTableName && typeof tempTableName === 'object' && tempTableName.value) {
+          tempTableName = tempTableName.value;
+        }
         parsedStages.push({
           name: tempTableName,
           type: "TEMP_TABLE_INSERT",
@@ -84,9 +89,18 @@ export function identifyStages(sqlText: string): StageSpec[] {
       }
     }
     
-    // Convert parsed stages to StageSpecs
+    // Build canonical stage name set for dependency detection
+    const stageNameSet = new Set<string>();
+    const stageCanonicalMap = new Map<string, string>(); // canonical -> original
+    for (const st of parsedStages) {
+      const canon = canonicalizeIdentifier(String(st.name)) || String(st.name).toLowerCase();
+      stageNameSet.add(canon);
+      stageCanonicalMap.set(canon, String(st.name));
+    }
+
+    // Convert parsed stages to StageSpecs using the stage name set
     return parsedStages.map((stage, index) => {
-      const spec = extractStageSpec(stage.ast, stage.name, stage.type);
+      const spec = extractStageSpec(stage.ast, stage.name, stage.type, stageNameSet);
       spec.id = `S${index}`;
       return spec;
     });
@@ -99,16 +113,20 @@ export function identifyStages(sqlText: string): StageSpec[] {
 /**
  * Checks if a table name is likely a CTE or temp table dependency
  */
-function isDependencyTable(tableName: string | null): boolean {
+function isDependencyTable(tableName: string | null, stageNameSet?: Set<string>): boolean {
   if (!tableName) return false;
-  // CTEs often start with 'cte_' or temp tables start with '#' or '##'
-  return tableName.startsWith('cte_') || tableName.startsWith('#');
+  if (!stageNameSet) {
+    // Fallback heuristics
+    return tableName.startsWith('cte_') || tableName.startsWith('#');
+  }
+  const canon = canonicalizeIdentifier(tableName);
+  return !!(canon && stageNameSet.has(canon));
 }
 
 /**
  * Extracts FROM, JOIN, WHERE, GROUP BY from a single stage's AST
  */
-function extractStageSpec(ast: any, name: string, type: StageSpec['type']): StageSpec {
+function extractStageSpec(ast: any, name: string, type: StageSpec['type'], stageNameSet?: Set<string>): StageSpec {
   const spec: StageSpec = {
     id: 'S0', // Will be set by caller
     name,
@@ -123,6 +141,7 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
   if (!ast) return spec;
   
   const dependencySet = new Set<string>(); // Track unique dependencies
+  const aliasToCanonical = new Map<string, string>();
   
   // Extract FROM clause
   if (ast.from && Array.isArray(ast.from)) {
@@ -136,8 +155,9 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
           
           // Track dependency if JOIN references a CTE or temp table
           const tableName = extractTableName(fromItem);
-          if (isDependencyTable(tableName)) {
-            dependencySet.add(tableName!);
+          if (tableName) {
+            const canon = canonicalizeIdentifier(tableName);
+            if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
           }
         }
       } else {
@@ -148,8 +168,16 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
           
           // Track dependency if FROM references a CTE or temp table
           const tableName = extractTableName(fromItem);
-          if (isDependencyTable(tableName)) {
-            dependencySet.add(tableName!);
+          if (tableName) {
+            const canon = canonicalizeIdentifier(tableName);
+            if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
+          }
+
+          // Map aliases to canonical name to support references via alias later in joins
+          const aliasName = (fromItem.as || fromItem.alias) || null;
+          if (aliasName && tableName) {
+            const canon = canonicalizeIdentifier(tableName);
+            if (canon) aliasToCanonical.set(String(aliasName).toLowerCase(), canon);
           }
         }
       }
@@ -165,12 +193,23 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
         
         // Track dependency if JOIN references a CTE or temp table
         const tableName = extractTableName(joinItem);
-        if (isDependencyTable(tableName)) {
-          dependencySet.add(tableName!);
+        if (tableName) {
+          const canon = canonicalizeIdentifier(tableName);
+          if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
+        }
+
+        // If join has alias, map it too
+        const aliasName = (joinItem.as || joinItem.alias) || null;
+        if (aliasName && tableName) {
+          const canon = canonicalizeIdentifier(tableName);
+          if (canon) aliasToCanonical.set(String(aliasName).toLowerCase(), canon);
         }
       }
     }
   }
+
+  // Walk the AST recursively to detect table references inside subqueries
+  collectTableNamesFromAst(ast, stageNameSet, dependencySet);
   
   // Extract WHERE clauses
   if (ast.where) {
@@ -227,13 +266,72 @@ function extractFromSql(fromItem: any): string {
  * Extracts table name from FROM or JOIN item
  */
 function extractTableName(item: any): string | null {
+  // Normalize many AST forms into a string identifier for matching
   if (!item) return null;
-  
+
+  // If item is a plain string
+  if (typeof item === 'string') return item;
+
+  // If join or from item contains table information in different structures
   if (item.table) {
-    return item.table;
+    if (typeof item.table === 'string') return item.table;
+    if (typeof item.table === 'object' && item.table.value) return item.table.value;
   }
-  
+
+  if (item.name && typeof item.name === 'string') return item.name;
+  if (item.name && typeof item.name === 'object' && item.name.value) return item.name.value;
+
+  if (item.expr && typeof item.expr === 'string') return item.expr;
+  if (item.expr && typeof item.expr === 'object' && item.expr.type === 'select') return null; // subquery
+
+  if (item.value && typeof item.value === 'string') return item.value;
+
   return null;
+}
+
+/**
+ * Recursively collects table names referenced inside an AST node
+ * (handles nested subqueries/derived tables) and adds canonical names to dependency set when found
+ */
+function collectTableNamesFromAst(node: any, stageNameSet?: Set<string>, dependencySet?: Set<string>) {
+  if (!node) return;
+  // If node has 'from' clause
+  if (node.from && Array.isArray(node.from)) {
+    for (const fromItem of node.from) {
+      const tableName = extractTableName(fromItem);
+      if (tableName) {
+        const canon = canonicalizeIdentifier(String(tableName));
+        if (isDependencyTable(canon, stageNameSet) && dependencySet && canon) dependencySet.add(canon);
+      }
+      // If this from item is a subquery, traverse it
+      if (fromItem.expr && typeof fromItem.expr === 'object' && fromItem.expr.type === 'select') {
+        collectTableNamesFromAst(fromItem.expr, stageNameSet, dependencySet);
+      }
+    }
+  }
+
+  // If node has join nodes
+  if (node.join && Array.isArray(node.join)) {
+    for (const j of node.join) {
+      const tableName = extractTableName(j);
+      if (tableName) {
+        const canon = canonicalizeIdentifier(String(tableName));
+        if (isDependencyTable(canon, stageNameSet) && dependencySet && canon) dependencySet.add(canon);
+      }
+      if (j.expr && typeof j.expr === 'object' && j.expr.type === 'select') {
+        collectTableNamesFromAst(j.expr, stageNameSet, dependencySet);
+      }
+    }
+  }
+
+  // If node has where, look for subqueries inside conditions
+  if (node.where) {
+    if (node.where.type === 'binary_expr') {
+      // If either side is a select node (subquery), traverse it
+      if (node.where.left && node.where.left.type === 'select') collectTableNamesFromAst(node.where.left, stageNameSet, dependencySet);
+      if (node.where.right && node.where.right.type === 'select') collectTableNamesFromAst(node.where.right, stageNameSet, dependencySet);
+    }
+  }
 }
 
 /**
@@ -349,7 +447,15 @@ function extractConditionSql(node: any): string {
     return `${funcName}(${args})`;
   }
   
-  // Fallback for unhandled node types - return a readable placeholder
+  // Fallback for unhandled node types - attempt to re-hydrate SQL from AST or provide placeholder
+  try {
+    const parser = new Parser();
+    const sqlStr = parser.sqlify(node, { database: 'TransactSQL' });
+    if (sqlStr) return sqlStr;
+  } catch (e) {
+    // ignore and return placeholder below
+  }
+
   return '[Complex Expression]';
 }
 

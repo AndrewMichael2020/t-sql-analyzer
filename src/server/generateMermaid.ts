@@ -1,4 +1,5 @@
 import type { DiagramSpec, StageSpec } from '@/shared/types/diagramSpec';
+import { canonicalizeIdentifier } from './utils/canonicalize';
 
 /**
  * Generates Mermaid flowchart code from diagram specification
@@ -105,7 +106,8 @@ function generateStageLineage(stages: StageSpec[]): string[] {
   // Build a map of stage names to stage IDs
   const nameToId = new Map<string, string>();
   for (const stage of stages) {
-    nameToId.set(stage.name, stage.id);
+    const canon = canonicalizeIdentifier(stage.name) || stage.name;
+    nameToId.set(String(canon), stage.id);
   }
   
   // For each stage, draw arrows from its dependencies
@@ -113,7 +115,7 @@ function generateStageLineage(stages: StageSpec[]): string[] {
     if (stage.dependencies.length > 0) {
       // Find matching stages for each dependency
       for (const depName of stage.dependencies) {
-        const depId = nameToId.get(depName);
+        const depId = nameToId.get(canonicalizeIdentifier(depName) || depName);
         if (depId) {
           lines.push(`${depId} --> ${stage.id}`);
         }
