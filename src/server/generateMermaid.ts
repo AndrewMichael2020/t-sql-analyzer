@@ -115,9 +115,11 @@ function generateStageLineage(stages: StageSpec[]): string[] {
     if (stage.dependencies.length > 0) {
       // Find matching stages for each dependency
       for (const depName of stage.dependencies) {
-        const depId = nameToId.get(canonicalizeIdentifier(depName) || depName);
+        const depCanon = canonicalizeIdentifier(depName) || depName;
+        const depId = nameToId.get(String(depCanon));
         if (depId) {
-          lines.push(`${depId} --> ${stage.id}`);
+          const edge = `${depId} --> ${stage.id}`;
+          if (!lines.includes(edge)) lines.push(edge);
         }
       }
     }

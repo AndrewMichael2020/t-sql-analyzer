@@ -1,6 +1,7 @@
 import { Parser } from 'node-sql-parser';
 import type { StageSpec, FromItem, JoinItem, WhereItem, GroupByItem } from '@/shared/types/diagramSpec';
 import { canonicalizeIdentifier, extractTableIdentifierFromNode } from './utils/canonicalize';
+import { parseSql } from './parseSql';
 
 interface ParsedStage {
   name: string;
@@ -13,8 +14,8 @@ interface ParsedStage {
  */
 export function identifyStages(sqlText: string): StageSpec[] {
   try {
-    const parser = new Parser();
-    const ast: any = parser.astify(sqlText, { database: 'TransactSQL' });
+    const parseResult = parseSql(sqlText);
+    const ast: any = parseResult.ast;
     
     const parsedStages: ParsedStage[] = [];
     
@@ -51,7 +52,7 @@ export function identifyStages(sqlText: string): StageSpec[] {
       if ((stmt as any).type === 'select' && (stmt as any).into) {
         const intoObj = (stmt as any).into;
         // Support multiple AST shapes for INTO
-        const tempTableName = intoObj?.table || intoObj?.expr || intoObj?.value || intoObj || null;
+        const tempTableName = extractTableIdentifierFromNode(intoObj) || intoObj || null;
         if (tempTableName) {
           parsedStages.push({
             name: tempTableName,
@@ -69,10 +70,7 @@ export function identifyStages(sqlText: string): StageSpec[] {
       }
       // Check if this is an INSERT INTO (temp table insert)
       else if ((stmt as any).type === 'insert' && (stmt as any).table) {
-        let tempTableName = (stmt as any).table;
-        if (tempTableName && typeof tempTableName === 'object' && tempTableName.value) {
-          tempTableName = tempTableName.value;
-        }
+        const tempTableName = extractTableIdentifierFromNode((stmt as any).table) || (stmt as any).table;
         parsedStages.push({
           name: tempTableName,
           type: "TEMP_TABLE_INSERT",
@@ -115,12 +113,13 @@ export function identifyStages(sqlText: string): StageSpec[] {
  */
 function isDependencyTable(tableName: string | null, stageNameSet?: Set<string>): boolean {
   if (!tableName) return false;
+  // If the input is already canonical (lowercased, no brackets) then we can check directly
+  const canon = canonicalizeIdentifier(tableName) || String(tableName).toLowerCase();
   if (!stageNameSet) {
-    // Fallback heuristics
-    return tableName.startsWith('cte_') || tableName.startsWith('#');
+    // Fallback heuristics on canonical form
+    return canon.startsWith('cte_') || canon.startsWith('#');
   }
-  const canon = canonicalizeIdentifier(tableName);
-  return !!(canon && stageNameSet.has(canon));
+  return stageNameSet.has(canon);
 }
 
 /**
@@ -155,10 +154,8 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type'], stage
           
           // Track dependency if JOIN references a CTE or temp table
           const tableName = extractTableName(fromItem);
-          if (tableName) {
-            const canon = canonicalizeIdentifier(tableName);
-            if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
-          }
+          const canon = extractTableIdentifierFromNode(fromItem) || canonicalizeIdentifier(tableName);
+          if (canon && isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
         }
       } else {
         // This is a regular FROM
@@ -166,17 +163,15 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type'], stage
         if (fromSql) {
           spec.fromItems.push({ sql: fromSql });
           
-          // Track dependency if FROM references a CTE or temp table
-          const tableName = extractTableName(fromItem);
-          if (tableName) {
-            const canon = canonicalizeIdentifier(tableName);
-            if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
-          }
+            // Track dependency if FROM references a CTE or temp table
+            const tableName = extractTableName(fromItem);
+            const canon = extractTableIdentifierFromNode(fromItem) || canonicalizeIdentifier(tableName);
+            if (canon && isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
 
           // Map aliases to canonical name to support references via alias later in joins
           const aliasName = (fromItem.as || fromItem.alias) || null;
           if (aliasName && tableName) {
-            const canon = canonicalizeIdentifier(tableName);
+            const canon = extractTableIdentifierFromNode(fromItem) || canonicalizeIdentifier(tableName);
             if (canon) aliasToCanonical.set(String(aliasName).toLowerCase(), canon);
           }
         }
@@ -193,23 +188,21 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type'], stage
         
         // Track dependency if JOIN references a CTE or temp table
         const tableName = extractTableName(joinItem);
-        if (tableName) {
-          const canon = canonicalizeIdentifier(tableName);
-          if (isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
-        }
+        const canon = extractTableIdentifierFromNode(joinItem) || canonicalizeIdentifier(tableName);
+        if (canon && isDependencyTable(canon, stageNameSet)) dependencySet.add(canon!);
 
         // If join has alias, map it too
         const aliasName = (joinItem.as || joinItem.alias) || null;
         if (aliasName && tableName) {
-          const canon = canonicalizeIdentifier(tableName);
+          const canon = extractTableIdentifierFromNode(joinItem) || canonicalizeIdentifier(tableName);
           if (canon) aliasToCanonical.set(String(aliasName).toLowerCase(), canon);
         }
       }
     }
   }
 
-  // Walk the AST recursively to detect table references inside subqueries
-  collectTableNamesFromAst(ast, stageNameSet, dependencySet);
+  // Walk the AST recursively to detect table references inside subqueries and column refs
+  collectTableNamesFromAst(ast, stageNameSet, dependencySet, aliasToCanonical);
   
   // Extract WHERE clauses
   if (ast.where) {
@@ -244,14 +237,29 @@ function extractFromSql(fromItem: any): string {
   
   let tablePart = '';
   if (fromItem.table) {
-    // Include schema/database if present
-    const parts = [];
-    if (fromItem.db) parts.push(fromItem.db);
-    if (fromItem.schema) parts.push(fromItem.schema);
-    parts.push(fromItem.table);
-    tablePart = parts.join('.');
+    // Include schema/database if present and handle object shapes too
+    if (typeof fromItem.table === 'string') {
+      const parts = [];
+      if (fromItem.db) parts.push(fromItem.db);
+      if (fromItem.schema) parts.push(fromItem.schema);
+      parts.push(fromItem.table);
+      tablePart = parts.join('.');
+    } else if (typeof fromItem.table === 'object') {
+      // Try to compose a db.schema.table from nested properties
+      const parts: string[] = [];
+      if (fromItem.table.db) parts.push(fromItem.table.db);
+      if (fromItem.table.schema) parts.push(fromItem.table.schema);
+      if (fromItem.table.table) parts.push(fromItem.table.table);
+      if (fromItem.table.value) parts.push(fromItem.table.value);
+      tablePart = parts.join('.') || (fromItem.table.value || '');
+    }
   } else if (fromItem.expr && fromItem.expr.type === 'select') {
-    tablePart = '(SELECT ...)'; // Subquery placeholder
+    try {
+      const parser = new Parser();
+      tablePart = `(${parser.sqlify(fromItem.expr, { database: 'TransactSQL' })})`;
+    } catch (e) {
+      tablePart = '(SELECT ...)';
+    }
   }
   
   const alias = fromItem.as || fromItem.alias;
@@ -275,7 +283,10 @@ function extractTableName(item: any): string | null {
   // If join or from item contains table information in different structures
   if (item.table) {
     if (typeof item.table === 'string') return item.table;
-    if (typeof item.table === 'object' && item.table.value) return item.table.value;
+    if (typeof item.table === 'object') {
+      if (item.table.value) return item.table.value;
+      if (item.table.table) return item.table.table;
+    }
   }
 
   if (item.name && typeof item.name === 'string') return item.name;
@@ -293,7 +304,7 @@ function extractTableName(item: any): string | null {
  * Recursively collects table names referenced inside an AST node
  * (handles nested subqueries/derived tables) and adds canonical names to dependency set when found
  */
-function collectTableNamesFromAst(node: any, stageNameSet?: Set<string>, dependencySet?: Set<string>) {
+function collectTableNamesFromAst(node: any, stageNameSet?: Set<string>, dependencySet?: Set<string>, aliasToCanonical?: Map<string, string>) {
   if (!node) return;
   // If node has 'from' clause
   if (node.from && Array.isArray(node.from)) {
@@ -305,7 +316,7 @@ function collectTableNamesFromAst(node: any, stageNameSet?: Set<string>, depende
       }
       // If this from item is a subquery, traverse it
       if (fromItem.expr && typeof fromItem.expr === 'object' && fromItem.expr.type === 'select') {
-        collectTableNamesFromAst(fromItem.expr, stageNameSet, dependencySet);
+        collectTableNamesFromAst(fromItem.expr, stageNameSet, dependencySet, aliasToCanonical);
       }
     }
   }
@@ -319,17 +330,36 @@ function collectTableNamesFromAst(node: any, stageNameSet?: Set<string>, depende
         if (isDependencyTable(canon, stageNameSet) && dependencySet && canon) dependencySet.add(canon);
       }
       if (j.expr && typeof j.expr === 'object' && j.expr.type === 'select') {
-        collectTableNamesFromAst(j.expr, stageNameSet, dependencySet);
+        collectTableNamesFromAst(j.expr, stageNameSet, dependencySet, aliasToCanonical);
       }
     }
   }
 
   // If node has where, look for subqueries inside conditions
-  if (node.where) {
+    if (node.where) {
     if (node.where.type === 'binary_expr') {
       // If either side is a select node (subquery), traverse it
       if (node.where.left && node.where.left.type === 'select') collectTableNamesFromAst(node.where.left, stageNameSet, dependencySet);
       if (node.where.right && node.where.right.type === 'select') collectTableNamesFromAst(node.where.right, stageNameSet, dependencySet);
+    }
+  }
+
+  // Look for column references that refer to aliases; check whether alias maps to a canonical stage
+  if (node.type === 'column_ref' && node.table && aliasToCanonical && dependencySet) {
+    const alias = String(node.table).toLowerCase();
+    const canon = aliasToCanonical.get(alias);
+    if (canon && stageNameSet && stageNameSet.has(canon)) {
+      dependencySet.add(canon);
+    }
+  }
+
+  // Traverse other properties
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const c of child) collectTableNamesFromAst(c, stageNameSet, dependencySet, aliasToCanonical);
+    } else if (child && typeof child === 'object') {
+      collectTableNamesFromAst(child, stageNameSet, dependencySet, aliasToCanonical);
     }
   }
 }
@@ -355,12 +385,20 @@ function extractJoinSql(joinItem: any): string {
   
   let tablePart = '';
   if (joinItem.table) {
-    // Include schema/database if present
-    const parts = [];
-    if (joinItem.db) parts.push(joinItem.db);
-    if (joinItem.schema) parts.push(joinItem.schema);
-    parts.push(joinItem.table);
-    tablePart = parts.join('.');
+    if (typeof joinItem.table === 'string') {
+      const parts = [];
+      if (joinItem.db) parts.push(joinItem.db);
+      if (joinItem.schema) parts.push(joinItem.schema);
+      parts.push(joinItem.table);
+      tablePart = parts.join('.');
+    } else if (typeof joinItem.table === 'object') {
+      const parts: string[] = [];
+      if (joinItem.table.db) parts.push(joinItem.table.db);
+      if (joinItem.table.schema) parts.push(joinItem.table.schema);
+      if (joinItem.table.table) parts.push(joinItem.table.table);
+      if (joinItem.table.value) parts.push(joinItem.table.value);
+      tablePart = parts.join('.') || (joinItem.table.value || '');
+    }
   }
   
   const alias = joinItem.as || joinItem.alias;
@@ -424,6 +462,39 @@ function extractConditionSql(node: any): string {
     }
     return node.column || '';
   }
+    if (node.type === 'case' || node.type === 'case_expression' || node.type === 'case_when') {
+      // Build CASE WHEN ... THEN ... ELSE ... END
+      try {
+        const parts: string[] = [];
+        if (node.args && Array.isArray(node.args.value)) {
+          for (const arg of node.args.value) {
+            if (arg.type === 'when') {
+              const whenExpr = extractConditionSql(arg.when);
+              const thenExpr = extractConditionSql(arg.then);
+              parts.push(`WHEN ${whenExpr} THEN ${thenExpr}`);
+            }
+          }
+        }
+        if (node.else) {
+          parts.push(`ELSE ${extractConditionSql(node.else)}`);
+        }
+        return `CASE ${parts.join(' ')} END`;
+      } catch (e) {
+        // fall through to parser attempt
+      }
+    }
+
+    if (node.type === 'cast' || node.type === 'convert') {
+      // CAST(expr AS type)
+      try {
+        const expr = extractConditionSql(node.expr || node.arg || node.value);
+        const target = node.as || node.target || node.to || node.type;
+        const targetStr = typeof target === 'string' ? target : (target && target.dataType ? target.dataType : '');
+        return `CAST(${expr} AS ${targetStr})`;
+      } catch (e) {
+        // fallthrough
+      }
+    }
   
   if (node.type === 'number') {
     return String(node.value);
@@ -441,9 +512,22 @@ function extractConditionSql(node: any): string {
   
   if (node.type === 'function') {
     const funcName = node.name || '';
-    const args = node.args && Array.isArray(node.args.value) 
-      ? node.args.value.map(extractConditionSql).join(', ')
-      : '';
+    // args can be { value: [...] } or an array
+    const argsArray = node.args && node.args.value ? node.args.value : (Array.isArray(node.args) ? node.args : []);
+    const args = Array.isArray(argsArray) ? argsArray.map(extractConditionSql).join(', ') : '';
+    // If function node has an 'over' clause (window function) rehydrate it
+    if (node.over) {
+      const overParts = [];
+      if (node.over.partition) overParts.push('PARTITION BY ' + (Array.isArray(node.over.partition) ? node.over.partition.map(extractConditionSql).join(', ') : extractConditionSql(node.over.partition)));
+      if (node.over.orderby || node.over.order) {
+        const order = node.over.orderby || node.over.order;
+        // order may be an array or object
+        const orderStr = Array.isArray(order) ? order.map(extractConditionSql).join(', ') : extractConditionSql(order);
+        overParts.push('ORDER BY ' + orderStr);
+      }
+      const overStr = overParts.length ? ` OVER(${overParts.join(' ')})` : ' OVER()';
+      return `${funcName}(${args})${overStr}`.trim();
+    }
     return `${funcName}(${args})`;
   }
   
