@@ -76,8 +76,15 @@ function generateStageSubgraph(stage: StageSpec): string[] {
     nodeIds.push(nodeId);
   }
   
+  // If no nodes were added, add a placeholder to avoid empty subgraph
+  if (nodeIds.length === 0) {
+    const nodeId = `${stage.id}_N0`;
+    lines.push(`    ${nodeId}["(No SQL clauses)"]`);
+    nodeIds.push(nodeId);
+  }
+  
   // Connect nodes sequentially within the stage
-  if (nodeIds.length > 0) {
+  if (nodeIds.length > 1) {
     const connections = nodeIds.slice(0, -1).map((id, i) => 
       `    ${id} --> ${nodeIds[i + 1]}`
     );

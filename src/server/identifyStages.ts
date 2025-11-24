@@ -97,6 +97,15 @@ export function identifyStages(sqlText: string): StageSpec[] {
 }
 
 /**
+ * Checks if a table name is likely a CTE or temp table dependency
+ */
+function isDependencyTable(tableName: string | null): boolean {
+  if (!tableName) return false;
+  // CTEs often start with 'cte_' or temp tables start with '#' or '##'
+  return tableName.startsWith('cte_') || tableName.startsWith('#');
+}
+
+/**
  * Extracts FROM, JOIN, WHERE, GROUP BY from a single stage's AST
  */
 function extractStageSpec(ast: any, name: string, type: StageSpec['type']): StageSpec {
@@ -113,6 +122,8 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
   
   if (!ast) return spec;
   
+  const dependencySet = new Set<string>(); // Track unique dependencies
+  
   // Extract FROM clause
   if (ast.from && Array.isArray(ast.from)) {
     for (const fromItem of ast.from) {
@@ -125,8 +136,8 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
           
           // Track dependency if JOIN references a CTE or temp table
           const tableName = extractTableName(fromItem);
-          if (tableName && (tableName.startsWith('cte_') || tableName.startsWith('#'))) {
-            spec.dependencies.push(tableName);
+          if (isDependencyTable(tableName)) {
+            dependencySet.add(tableName!);
           }
         }
       } else {
@@ -137,8 +148,8 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
           
           // Track dependency if FROM references a CTE or temp table
           const tableName = extractTableName(fromItem);
-          if (tableName && (tableName.startsWith('cte_') || tableName.startsWith('#'))) {
-            spec.dependencies.push(tableName);
+          if (isDependencyTable(tableName)) {
+            dependencySet.add(tableName!);
           }
         }
       }
@@ -154,8 +165,8 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
         
         // Track dependency if JOIN references a CTE or temp table
         const tableName = extractTableName(joinItem);
-        if (tableName && (tableName.startsWith('cte_') || tableName.startsWith('#'))) {
-          spec.dependencies.push(tableName);
+        if (isDependencyTable(tableName)) {
+          dependencySet.add(tableName!);
         }
       }
     }
@@ -179,6 +190,9 @@ function extractStageSpec(ast: any, name: string, type: StageSpec['type']): Stag
       }
     }
   }
+  
+  // Convert dependency set to array
+  spec.dependencies = Array.from(dependencySet);
   
   return spec;
 }
@@ -335,8 +349,8 @@ function extractConditionSql(node: any): string {
     return `${funcName}(${args})`;
   }
   
-  // Fallback
-  return JSON.stringify(node);
+  // Fallback for unhandled node types - return a readable placeholder
+  return '[Complex Expression]';
 }
 
 /**
