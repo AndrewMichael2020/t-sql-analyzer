@@ -16,13 +16,38 @@ export function identifyStages(sqlText: string): StageSpec[] {
   try {
     const parseResult = parseSql(sqlText);
     const ast: any = parseResult.ast;
+    // If the parser returned a null AST then parsing failed; surface an error so callers can handle it
+    if (!ast) throw new Error('Failed to parse SQL');
     
     const parsedStages: ParsedStage[] = [];
     
     // Handle single statement or array of statements
     const statements = Array.isArray(ast) ? ast : [ast];
+    // Remove falsey entries
+    const filtered = Array.isArray(statements) ? statements.filter(Boolean) : statements;
+    // If we have no valid statements or the statements are not select/insert/with shapes, throw parse error
+    if (!filtered || (Array.isArray(filtered) && filtered.length === 0)) {
+      throw new Error('Failed to parse SQL');
+    }
+    const validTypes = new Set(['select', 'insert']);
+    const hasValidType = (Array.isArray(filtered) ? filtered : [filtered]).some((st) => {
+      if (!st) return false;
+      if (typeof st.type === 'string' && validTypes.has(st.type)) return true;
+      // Allow select nodes that use 'with' clause (CTE)
+      if (st.with) return true;
+      return false;
+    });
+    if (!hasValidType) {
+      throw new Error('Failed to parse SQL');
+    }
+    // If the parser returned an array with all null/undefined entries, treat as parse failure
+    if (Array.isArray(statements) && statements.length > 0 && statements.every((s) => !s)) {
+      throw new Error('Failed to parse SQL');
+    }
     
     for (const stmt of statements) {
+      // Guard against null statements (parser might emit nulls in some failure cases)
+      if (!stmt) continue;
       // Extract CTEs from WITH clause
       if ((stmt as any).with) {
         const ctes = Array.isArray((stmt as any).with) ? (stmt as any).with : [(stmt as any).with];
@@ -39,7 +64,7 @@ export function identifyStages(sqlText: string): StageSpec[] {
             // The CTE's stmt might be wrapped - check for nested ast
             const stmtAst = cte.stmt.ast || cte.stmt;
             parsedStages.push({
-              name: cteName,
+              name: String(cteName),
               type: "CTE",
               ast: stmtAst
             });
@@ -55,7 +80,7 @@ export function identifyStages(sqlText: string): StageSpec[] {
         const tempTableName = extractTableIdentifierFromNode(intoObj) || intoObj || null;
         if (tempTableName) {
           parsedStages.push({
-            name: tempTableName,
+            name: String(tempTableName),
             type: "TEMP_TABLE",
             ast: stmt
           });
@@ -72,7 +97,7 @@ export function identifyStages(sqlText: string): StageSpec[] {
       else if ((stmt as any).type === 'insert' && (stmt as any).table) {
         const tempTableName = extractTableIdentifierFromNode((stmt as any).table) || (stmt as any).table;
         parsedStages.push({
-          name: tempTableName,
+          name: String(tempTableName),
           type: "TEMP_TABLE_INSERT",
           ast: (stmt as any).select || stmt
         });
@@ -104,7 +129,8 @@ export function identifyStages(sqlText: string): StageSpec[] {
     });
   } catch (error) {
     console.error('Error identifying stages:', error);
-    return [];
+    // Rethrow so callers (e.g., API route) can present a proper error response
+    throw error;
   }
 }
 

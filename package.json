@@ -4,7 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "test": "uvu -r ts-node/register 'src/server/__tests__/**/*.spec.ts'",
+    "test": "npm run test:cjs",
+    "test:cjs": "TS_NODE_PROJECT=tsconfig.test.json uvu -r tsconfig-paths/register -r ts-node/register/transpile-only src/server/__tests__",
+    "test:esm": "node --loader ts-node/esm -r tsconfig-paths/register ./node_modules/uvu/bin.js src/server/__tests__",
+    "debug:require": "node -r tsconfig-paths/register -r ts-node/register scripts/debug-require.js",
+    "fix-vulns": "npm audit fix || true",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -25,6 +29,10 @@
     "eslint-config-next": "^14.0.4",
     "typescript": "^5.3.3",
     "ts-node": "^10.9.1",
-    "uvu": "^0.5.1"
+    "uvu": "^0.5.1",
+    "tsconfig-paths": "^4.2.0"
+  },
+  "overrides": {
+    "glob": "^10.4.6"
   }
 }

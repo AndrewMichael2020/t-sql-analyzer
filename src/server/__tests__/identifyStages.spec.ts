@@ -1,7 +1,9 @@
-import { test } from 'uvu';
-import * as assert from 'uvu/assert';
-import { identifyStages } from '@/server/identifyStages';
-import { generateMermaidCode } from '@/server/generateMermaid';
+const { test } = require('uvu');
+const assert = require('uvu/assert');
+const path = require('path');
+const server = require(path.resolve(process.cwd(), 'src/server'));
+const { identifyStages } = server;
+const { generateMermaidCode } = server;
 
 // Test 1: CTE dependency detection with arbitrary names
 const sql1 = `WITH orders AS (SELECT id FROM dbo.orders), recent AS (SELECT * FROM orders) SELECT * FROM recent;`;
@@ -9,11 +11,11 @@ const stages1 = identifyStages(sql1);
 
 test('CTE dependency detection: orders->recent', () => {
   // Expect at least two stages: orders and recent and final select
-  const names = stages1.map(s => s.name.toString().toLowerCase());
+  const names = stages1.map((s: any) => String(s.name).toLowerCase());
   assert.ok(names.some(n => n.includes('orders')));
   assert.ok(names.some(n => n.includes('recent')));
   // Find recent stage and assert dependency includes 'orders'
-  const recent = stages1.find(s => (s.name as string).toLowerCase().includes('recent'));
+  const recent = stages1.find((s: any) => String(s.name).toLowerCase().includes('recent'));
   assert.ok(recent);
   assert.ok((recent!.dependencies || []).some(dep => dep === 'orders'));
 });
@@ -23,7 +25,7 @@ const sql2 = `SELECT a.col INTO #temp FROM (SELECT ROW_NUMBER() OVER (PARTITION 
 const stages2 = identifyStages(sql2);
 
 test('SELECT INTO creates temp stage #temp and detects nested table reference', () => {
-  const temp = stages2.find(s => (s.name as string).toLowerCase().includes('#temp'));
+  const temp = stages2.find((s: any) => String(s.name).toLowerCase().includes('#temp'));
   assert.ok(temp, 'Should find temp stage named #temp');
   // The nested table reference to tableA is not necessarily treated as a stage dependency (it's a base table), but stage should exist
   assert.is(temp!.type, 'TEMP_TABLE');
@@ -34,7 +36,7 @@ const sql3 = `WITH src AS (SELECT id FROM dbo.base), final AS (SELECT t.id FROM 
 const stages3 = identifyStages(sql3);
 
 test('Derived table referencing a CTE should be dependency final->src', () => {
-  const final = stages3.find(s => (s.name as string).toLowerCase().includes('final'));
+  const final = stages3.find((s: any) => String(s.name).toLowerCase().includes('final'));
   assert.ok(final, 'final stage should exist');
   assert.ok((final!.dependencies || []).some(dep => dep === 'src'));
 });
@@ -43,10 +45,10 @@ test('Derived table referencing a CTE should be dependency final->src', () => {
 const sql6 = `WITH cte AS (SELECT id, CAST(col AS VARCHAR(10)) as col_str, CASE WHEN col > 10 THEN 'A' ELSE 'B' END as cat FROM dbo.t) SELECT * FROM cte;`;
 const stages6 = identifyStages(sql6);
 test('CASE and CAST expressions should not break parsing and stage detection', () => {
-  const cte = stages6.find(s => (s.name as string).toLowerCase().includes('cte'));
+  const cte = stages6.find((s: any) => String(s.name).toLowerCase().includes('cte'));
   assert.ok(cte, 'cte should be detected');
   // Ensure that a final select referencing cte is present (there may be final select stage)
-  const final = stages6.find(s => (s.name as string).toLowerCase().includes('final') || (s.type === 'FINAL_SELECT'));
+  const final = stages6.find((s: any) => String(s.name).toLowerCase().includes('final') || (s.type === 'FINAL_SELECT'));
   assert.ok(final, 'Final select should be detected');
   // Final select should depend on cte
   if (final) assert.ok((final!.dependencies || []).some(dep => dep === 'cte'));
@@ -56,7 +58,7 @@ test('CASE and CAST expressions should not break parsing and stage detection', (
 const sql7 = `SELECT a.col INTO #temp FROM (SELECT ROW_NUMBER() OVER (PARTITION BY col ORDER BY date) as rn, col FROM dbo.tableA) a;`;
 const stages7 = identifyStages(sql7);
 test('ROW_NUMBER() OVER in nested derived table should not break parsing and should create temp stage', () => {
-  const temp = stages7.find(s => (s.name as string).toLowerCase().includes('#temp'));
+  const temp = stages7.find((s: any) => String(s.name).toLowerCase().includes('#temp'));
   assert.ok(temp, 'Should find temp stage named #temp');
   assert.is(temp!.type, 'TEMP_TABLE');
 });
@@ -65,7 +67,7 @@ test('ROW_NUMBER() OVER in nested derived table should not break parsing and sho
   const sql4 = `WITH tz AS (SELECT id, ts AT TIME ZONE 'UTC' as ts_utc FROM dbo.t1) SELECT * FROM tz;`;
   const stages4 = identifyStages(sql4);
   test('AT TIME ZONE should parse and create a CTE stage', () => {
-    const tzStage = stages4.find(s => (s.name as string).toLowerCase().includes('tz'));
+    const tzStage = stages4.find((s: any) => String(s.name).toLowerCase().includes('tz'));
     assert.ok(tzStage, 'tz CTE stage should be detected');
   });
 
@@ -73,7 +75,7 @@ test('ROW_NUMBER() OVER in nested derived table should not break parsing and sho
   const sql5 = `INSERT INTO #temp (col) SELECT col FROM dbo.table1;`;
   const stages5 = identifyStages(sql5);
   test('INSERT INTO creates TEMP_TABLE_INSERT stage', () => {
-    const temp = stages5.find(s => (s.name as string).toLowerCase().includes('#temp'));
+    const temp = stages5.find((s: any) => String(s.name).toLowerCase().includes('#temp'));
     assert.ok(temp, 'Should find temp stage named #temp');
     assert.is(temp!.type, 'TEMP_TABLE_INSERT');
   });
@@ -90,6 +92,28 @@ test('ROW_NUMBER() OVER in nested derived table should not break parsing and sho
     const mermaid = generateMermaidCode(spec);
     // Ensure arrow S0 --> S1 exists
     assert.ok(mermaid.includes('S0 --> S1'));
+  });
+
+  // PoC: canonicalization test - verify bracketed/schema names are canonicalized
+  test('canonicalization handles schema/quoted names', () => {
+    const sql = `WITH [dbo].Orders AS (SELECT id FROM dbo.orders), Recent AS (SELECT * FROM [dbo].Orders) SELECT * FROM Recent;`;
+    const stages = identifyStages(sql);
+    const r = stages.find((s: any) => String(s.name).toLowerCase().includes('recent'));
+    assert.ok(r, 'recent stage should exist');
+    assert.ok((r!.dependencies || []).some((dep: any) => dep === 'orders'));
+  });
+
+  // Test 9: identifyStages should throw helpful error when SQL cannot be parsed
+  test('identifyStages throws on unparsable SQL', () => {
+    try {
+    identifyStages('THIS IS NOT SQL');
+      // If it doesn't throw, that's a failure
+      throw new Error('Expected identifyStages to throw on invalid SQL');
+    } catch (err) {
+      // Expect an Error with message including 'Failed to parse SQL'
+      const msg = err instanceof Error ? err.message : String(err);
+      assert.ok(msg.toLowerCase().includes('failed to parse') || msg.toLowerCase().includes('parse'));
+    }
   });
 
 // Run all tests
