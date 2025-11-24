@@ -117,5 +117,54 @@ test('ROW_NUMBER() OVER in nested derived table should not break parsing and sho
     }
   });
 
+  // Test 10: Dirty SQL with IF OBJECT_ID, IF EXISTS, comments, and T-SQL specific syntax
+  const dirtySql = `/* ================================================================
+     IntraHealth PROFILE / PDDU Note-Parsing Pipeline (Mock Version)
+     ================================================================ */
+  
+  IF OBJECT_ID('tempdb..#RawVisits') IS NOT NULL
+      DROP TABLE #RawVisits;
+  
+  IF EXISTS (SELECT 1 FROM tempdb.sys.tables WHERE name LIKE '#History%')
+      DROP TABLE #History;
+  
+  SELECT TOP (5000)
+        v.VisitNo
+      , v.PatientNo
+      , v.ProviderCode
+  INTO #RawVisits
+  FROM dbo.PPDDU_Visit v WITH (NOLOCK)
+  ORDER BY v.VisitDate DESC;
+  
+  SELECT
+        r.VisitNo
+      , ProtocolUsed = CASE WHEN CHARINDEX('Protocol:', r.NoteRTF) > 0 THEN 'Found' ELSE NULL END
+  INTO #Parsed
+  FROM #RawVisits r;
+  
+  SELECT *
+  FROM #Parsed
+  WHERE VisitNo = 1;`;
+  
+  const dirtyStages = identifyStages(dirtySql);
+  
+  test('Dirty SQL with IF OBJECT_ID, comments, and WITH (NOLOCK) should parse successfully', () => {
+    // Should have at least 3 stages: #RawVisits, #Parsed, and Final SELECT
+    assert.ok(dirtyStages.length >= 3, 'Should have at least 3 stages');
+    
+    const rawVisits = dirtyStages.find((s: any) => String(s.name).toLowerCase().includes('rawvisits'));
+    assert.ok(rawVisits, 'Should find #RawVisits stage');
+    assert.is(rawVisits!.type, 'TEMP_TABLE');
+    
+    const parsed = dirtyStages.find((s: any) => String(s.name).toLowerCase().includes('parsed'));
+    assert.ok(parsed, 'Should find #Parsed stage');
+    assert.is(parsed!.type, 'TEMP_TABLE');
+    // #Parsed should depend on #RawVisits
+    assert.ok((parsed!.dependencies || []).some(dep => dep.toLowerCase().includes('rawvisits')), '#Parsed should depend on #RawVisits');
+    
+    const finalSelect = dirtyStages.find((s: any) => String(s.name).toLowerCase().includes('final') || s.type === 'FINAL_SELECT');
+    assert.ok(finalSelect, 'Should find final SELECT stage');
+  });
+
 // Run all tests
 test.run();

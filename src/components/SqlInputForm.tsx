@@ -40,7 +40,16 @@ export default function SqlInputForm({
             disabled={isLoading}
           />
         </div>
-        {error && <div className="error-message">{error}</div>}
+        {error && (
+          <div className="error-message">
+            {error.split('\n').map((line, i) => (
+              <React.Fragment key={i}>
+                {line}
+                {i < error.split('\n').length - 1 && <br />}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
         <button
           type="submit"
           className="generate-button"
